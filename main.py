@@ -860,11 +860,19 @@ class ConnectionManager:
         if socket:
             await socket.send_json(message)
 
+    async def broadcast(self, message: Dict):
+        """向所有连接的客户端广播消息"""
+        for player_id, socket in list(self.active.items()):
+            try:
+                await socket.send_json(message)
+            except Exception:
+                pass
+
 
 table = PokerTable()
 manager = ConnectionManager()
 table_lock = asyncio.Lock()
-auto_play_bots = False
+auto_play_bots = True  # 启用机器人自动游戏
 
 
 async def auto_play_loop():
