@@ -115,7 +115,7 @@ class AIPlayer(Player):
 
         if to_call == 0:
             if hand_strength > 0.6 and random.random() < 0.4:
-                return self._bet_action(my_chips, current_bet, pot)
+                return self._bet_action(my_chips, my_street_bet, current_bet, pot)
             return "check"
 
         if to_call > my_chips:
@@ -759,6 +759,7 @@ class PokerTable:
                     "isDealer": player.is_dealer,
                     "isSmallBlind": player.is_small_blind,
                     "isBigBlind": player.is_big_blind,
+                    "isBot": isinstance(player, AIPlayer),
                 }
                 for player in self.players
             ],
