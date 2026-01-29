@@ -98,6 +98,10 @@ class AIPlayer(Player):
         my_chips = self.chips
         my_street_bet = self.street_bet
 
+        # 保存公共牌供评估使用
+        self._board = table_state.get("board", [])
+        self._phase = table_state.get("phase", "preflop")
+
         self.thinking = True
 
         try:
@@ -119,26 +123,46 @@ class AIPlayer(Player):
             return "check"
 
         if to_call > my_chips:
-            if hand_strength > 0.5:
+            if hand_strength > 0.7:
                 return "call"
-            return random.choice(["call", "fold"])
+            return "fold"
 
         call_ratio = to_call / (my_chips + my_street_bet) if my_chips + my_street_bet > 0 else 1
+        pot_odds = to_call / (pot + to_call) if pot + to_call > 0 else 1
 
-        if hand_strength > 0.7:
-            if call_ratio < 0.3:
+        # 强牌策略
+        if hand_strength > 0.75:
+            if call_ratio < 0.3 and random.random() < 0.6:
                 return self._raise_action(my_chips, my_street_bet, current_bet)
             return "call"
+
+        # 中等牌力
+        elif hand_strength > 0.55:
+            if call_ratio > 0.3:
+                return "fold"
+            if call_ratio < 0.15 and random.random() < 0.4:
+                return self._raise_action(my_chips, my_street_bet, current_bet)
+            if pot_odds < hand_strength * 0.8:
+                return "call"
+            return "fold" if random.random() < 0.5 else "call"
+
+        # 中下牌力
         elif hand_strength > 0.4:
-            if call_ratio < 0.2 and random.random() < 0.5:
-                return self._raise_action(my_chips, my_street_bet, current_bet)
-            return random.choice(["call", "fold"]) if random.random() < 0.3 else "call"
+            if call_ratio > 0.2:
+                return "fold"
+            if pot_odds < hand_strength * 0.7:
+                return "fold" if random.random() < 0.6 else "call"
+            return "fold"
+
+        # 弱牌
         else:
-            if call_ratio > 0.3 and self.style == "激进":
+            if call_ratio > 0.15:
+                return "fold"
+            if self.style == "激进" and random.random() < 0.2:
                 return self._raise_action(my_chips, my_street_bet, current_bet)
-            if self.style == "保守":
-                return "fold" if to_call > pot * 0.2 else "call"
-            return random.choice(["call", "fold"]) if random.random() < 0.4 else "call"
+            if pot_odds < 0.3 and hand_strength > 0.35:
+                return "fold" if random.random() < 0.7 else "call"
+            return "fold"
 
     def _bet_action(self, my_chips: int, my_street_bet: int, current_bet: int, pot: int) -> str:
         """决定下注金额"""
@@ -164,25 +188,119 @@ class AIPlayer(Player):
         return "raise"
 
     def _evaluate_hand_strength(self) -> float:
-        """评估手牌强度（简化版）"""
+        """评估手牌强度（考虑公共牌）"""
+        if not self.cards or len(self.cards) < 2:
+            return 0.3
+
+        # 获取所有可用的牌（手牌 + 公共牌）
+        all_cards = self.cards.copy()
+        board = getattr(self, '_board', [])
+        if board:
+            all_cards.extend(board)
+
+        # 只有手牌时的评估
+        if len(all_cards) == 2:
+            return self._evaluate_hole_cards()
+
+        # 有公共牌时评估最佳牌型
+        if len(all_cards) >= 5:
+            try:
+                from itertools import combinations
+                best_rank = 0
+                for combo in combinations(all_cards, 5):
+                    rank = self._score_hand(combo)
+                    best_rank = max(best_rank, rank)
+
+                # 牌型强度映射（0-8 映射到 0.3-0.95）
+                return 0.3 + (best_rank / 8.0) * 0.65
+            except Exception:
+                return self._evaluate_hole_cards()
+
+        return self._evaluate_hole_cards()
+
+    def _evaluate_hole_cards(self) -> float:
+        """只评估手牌的强度"""
         if not self.cards or len(self.cards) < 2:
             return 0.3
 
         high_cards = sum(1 for c in self.cards if c["rank"] >= 11)
         ranks = [c["rank"] for c in self.cards]
+        suits = [c["suit"] for c in self.cards]
 
-        pairs = len([r for r in set(ranks) if ranks.count(r) >= 2])
-        same_suit = len(set(c["suit"] for c in self.cards)) == 2
+        # 对子
+        is_pair = ranks[0] == ranks[1]
+        # 同花
+        is_suited = suits[0] == suits[1]
+        # 连牌
+        is_connected = abs(ranks[0] - ranks[1]) <= 2
 
         strength = 0.3
-        if high_cards >= 1:
-            strength += 0.15
-        if pairs >= 1:
-            strength += 0.2 * pairs
-        if same_suit:
-            strength += 0.1
 
-        return min(strength, 0.9)
+        # 高牌加分
+        if high_cards == 2:
+            strength += 0.25
+        elif high_cards == 1:
+            strength += 0.15
+
+        # 对子大幅加分
+        if is_pair:
+            pair_rank = ranks[0]
+            if pair_rank >= 10:
+                strength += 0.30
+            elif pair_rank >= 7:
+                strength += 0.20
+            else:
+                strength += 0.15
+
+        # 同花加分
+        if is_suited:
+            strength += 0.10
+
+        # 连牌加分
+        if is_connected and not is_pair:
+            strength += 0.08
+
+        return min(strength, 0.85)
+
+    def _score_hand(self, cards) -> int:
+        """评估5张牌的牌型等级 (0-8)"""
+        ranks = sorted([c["rank"] for c in cards], reverse=True)
+        suits = [c["suit"] for c in cards]
+
+        # 计数
+        rank_counts = {}
+        for r in ranks:
+            rank_counts[r] = rank_counts.get(r, 0) + 1
+
+        counts = sorted(rank_counts.values(), reverse=True)
+        is_flush = len(set(suits)) == 1
+
+        # 顺子检查
+        is_straight = False
+        if len(set(ranks)) == 5:
+            if ranks[0] - ranks[4] == 4:
+                is_straight = True
+            elif set(ranks) == {14, 5, 4, 3, 2}:  # A-2-3-4-5
+                is_straight = True
+
+        # 牌型判断
+        if is_straight and is_flush:
+            return 8  # 同花顺
+        if counts == [4, 1]:
+            return 7  # 四条
+        if counts == [3, 2]:
+            return 6  # 葫芦
+        if is_flush:
+            return 5  # 同花
+        if is_straight:
+            return 4  # 顺子
+        if counts == [3, 1, 1]:
+            return 3  # 三条
+        if counts == [2, 2, 1]:
+            return 2  # 两对
+        if counts == [2, 1, 1, 1]:
+            return 1  # 一对
+        return 0  # 高牌
 
     def reset_for_round(self):
         super().reset_for_round()
@@ -302,6 +420,8 @@ class PokerTable:
             "pot": self.pot,
             "currentBet": self.current_bet,
             "viewerCallAmount": self.current_bet - current.street_bet,
+            "board": self.board,
+            "phase": self.phase,
         }
 
         # AI 决策行动
