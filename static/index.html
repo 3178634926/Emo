@@ -471,6 +471,15 @@
 
         .game-info span {
             font-size: 1.1em;
+            color: #aaa;
+        }
+
+        .game-info span strong {
+            color: #ffd700;
+        }
+
+        .waiting-players {
+            font-size: 1.1em;
         }
 
         .game-info span strong {
@@ -810,6 +819,14 @@
                     case 'error':
                         showError(data.message);
                         break;
+
+                    case 'bots_added':
+                        showNotification(`已添加 ${data.payload.length} 个 AI 机器人`);
+                        break;
+
+                    case 'bots_removed':
+                        showNotification('已移除所有 AI 机器人');
+                        break;
                 }
             };
 
@@ -858,6 +875,56 @@
                 ws.close();
             }
         });
+
+        function addBotControl() {
+            const controlDiv = document.createElement('div');
+            controlDiv.className = 'bot-controls';
+            controlDiv.innerHTML = `
+                <h3>AI 机器人控制</h3>
+                <button onclick="sendAddBot(1)">+1 机器人</button>
+                <button onclick="sendAddBot(2)">+2 机器人</button>
+                <button onclick="sendAddBot(3)">+3 机器人</button>
+                <button onclick="sendToggleAutoPlay()" id="autoPlayBtn">开启自动游戏</button>
+                <button onclick="sendRemoveBots()" class="btn-remove">移除所有机器人</button>
+            `;
+
+            const actionsParent = document.querySelector('.actions');
+            if (actionsParent) {
+                actionsParent.insertBefore(controlDiv, actionsParent.firstChild);
+            }
+        }
+
+        function sendAddBot(count) {
+            ws.send(JSON.stringify({
+                type: 'add_bot',
+                count: count
+            }));
+        }
+
+        function sendToggleAutoPlay() {
+            const btn = document.getElementById('autoPlayBtn');
+            const isEnabling = btn.textContent.includes('开启');
+            ws.send(JSON.stringify({
+                type: 'toggle_auto_play',
+                enabled: isEnabling
+            }));
+        }
+
+        function sendRemoveBots() {
+            ws.send(JSON.stringify({
+                type: 'remove_bots'
+            }));
+        }
+
+        function showNotification(message) {
+            const notifDiv = document.createElement('div');
+            notifDiv.className = 'notification';
+            notifDiv.textContent = message;
+            document.body.appendChild(notifDiv);
+            setTimeout(() => {
+                notifDiv.remove();
+            }, 3000);
+        }
 
         window.addEventListener('beforeunload', () => {
             if (ws) {

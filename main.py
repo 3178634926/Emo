@@ -37,6 +37,10 @@ HAND_NAMES = {
     0: "High Card",
 }
 
+# AI 机器人名称和风格
+BOT_NAMES = ["Alex", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Quinn"]
+BOT_STYLES = ["保守", "激进", "平衡"]
+
 
 def rank_to_label(value: int) -> str:
     return RANK_DISPLAY.get(value, str(value))
@@ -48,6 +52,129 @@ def card_to_label(card: Dict[str, int]) -> str:
 
 def build_deck() -> List[Dict[str, int]]:
     return [{"rank": rank, "suit": suit} for suit in SUITS for rank in RANKS]
+
+
+class AIPlayer(Player):
+    """AI 机器人玩家类"""
+
+    def __init__(self, player_id: str, name: str, style: str = "平衡"):
+        super().__init__(player_id, name)
+        self.style = style  # 保守, 激进, 平衡
+        self.action_timer = None
+        self.thinking = False
+
+    def decide_action(self, table_state: Dict) -> str:
+        """根据游戏状态决定行动"""
+        if self.thinking:
+            return None
+
+        to_call = table_state.get("viewerCallAmount", 0)
+        pot = table_state.get("pot", 0)
+        current_bet = table_state.get("currentBet", 0)
+        my_chips = self.chips
+        my_street_bet = self.street_bet
+
+        self.thinking = True
+
+        # 简单 AI 决策逻辑
+        try:
+            action = self._make_decision(to_call, pot, current_bet, my_chips, my_street_bet)
+        except Exception:
+            action = "fold"
+
+        self.thinking = False
+        return action
+
+    def _make_decision(self, to_call: int, pot: int, current_bet: int,
+                    my_chips: int, my_street_bet: int) -> str:
+        """核心决策逻辑"""
+        # 检查手牌强度（简化版）
+        hand_strength = self._evaluate_hand_strength()
+
+        if to_call == 0:
+            # 可以过牌
+            if hand_strength > 0.6 and random.random() < 0.4:
+                return self._bet_action(my_chips, current_bet, pot)
+            return "check"
+
+        if to_call > my_chips:
+            # 需要全压
+            if hand_strength > 0.5:
+                return "call"
+            return random.choice(["call", "fold"])
+
+        # 需要跟注
+        call_ratio = to_call / (my_chips + my_street_bet) if my_chips + my_street_bet > 0 else 1
+
+        if hand_strength > 0.7:
+            # 强牌
+            if call_ratio < 0.3:
+                return self._raise_action(my_chips, my_street_bet, current_bet)
+            return "call"
+        elif hand_strength > 0.4:
+            # 中等牌
+            if call_ratio < 0.2 and random.random() < 0.5:
+                return self._raise_action(my_chips, my_street_bet, current_bet)
+            return random.choice(["call", "fold"] if random.random() < 0.3 else "call")
+        else:
+            # 弱牌
+            if call_ratio > 0.3 and self.style == "激进":
+                return self._raise_action(my_chips, my_street_bet, current_bet)
+            if self.style == "保守":
+                return "fold" if to_call > pot * 0.2 else "call"
+            return random.choice(["call", "fold"]) if random.random() < 0.4 else "call"
+
+    def _bet_action(self, my_chips: int, my_street_bet: int, current_bet: int) -> str:
+        """决定下注金额"""
+        if self.style == "保守":
+            bet_amount = min(my_chips, current_bet * 2 if current_bet > 0 else self.big_blind_amount)
+        elif self.style == "激进":
+            bet_amount = min(my_chips, max(current_bet * 3, pot // 2))
+        else:  # 平衡
+            bet_amount = min(my_chips, max(current_bet * 2.5, pot // 3))
+        self.pending_bet = bet_amount
+        return "bet"
+
+    def _raise_action(self, my_chips: int, my_street_bet: int, current_bet: int) -> str:
+        """决定加注金额"""
+        min_raise = current_bet + self.big_blind_amount
+        if self.style == "保守":
+            raise_amount = min(my_chips - my_street_bet, min_raise * 1.5)
+        elif self.style == "激进":
+            raise_amount = min(my_chips - my_street_bet, current_bet * 3)
+        else:  # 平衡
+            raise_amount = min(my_chips - my_street_bet, min_raise * 2)
+        self.pending_bet = my_street_bet + raise_amount
+        return "raise"
+
+    def _evaluate_hand_strength(self) -> float:
+        """评估手牌强度（简化版）"""
+        if not self.cards or len(self.cards) < 2:
+            return 0.3
+
+        # 检查高牌
+        high_cards = sum(1 for c in self.cards if c["rank"] >= 11)
+        ranks = [c["rank"] for c in self.cards]
+
+        # 对子
+        pairs = len([r for r in set(ranks) if ranks.count(r) >= 2])
+        # 同花
+        same_suit = len(set(c["suit"] for c in self.cards)) == 2
+
+        strength = 0.3
+        if high_cards >= 1:
+            strength += 0.15
+        if pairs >= 1:
+            strength += 0.2 * pairs
+        if same_suit:
+            strength += 0.1
+
+        return min(strength, 0.9)
+
+    def reset_for_round(self):
+        super().reset_for_round()
+        self.thinking = False
+        self.pending_bet = None
 
 
 class Player:
@@ -97,9 +224,18 @@ class PokerTable:
         self.dealer_id: Optional[str] = None
         self.small_blind_id: Optional[str] = None
         self.big_blind_id: Optional[str] = None
+        self.auto_bots: List[AIPlayer] = []
+        self.auto_play_enabled = False
 
-    def add_player(self, name: str) -> Player:
-        player = Player(str(uuid.uuid4()), name)
+    def add_player(self, name: str, is_bot: bool = False) -> Player:
+        if is_bot:
+            bot_names_used = [p.name for p in self.players if isinstance(p, AIPlayer)]
+            available_names = [n for n in BOT_NAMES if n not in bot_names_used]
+            name = random.choice(available_names) if available_names else name
+            style = random.choice(BOT_STYLES)
+            player = AIPlayer(str(uuid.uuid4()), name, style)
+        else:
+            player = Player(str(uuid.uuid4()), name)
         self.players.append(player)
         if not self.host_id:
             self.host_id = player.id
@@ -401,6 +537,9 @@ class PokerTable:
             self.advance_phase()
             return
         self.advance_turn()
+        # 如果启用自动游戏且当前玩家是AI，触发AI行动
+        if self.auto_play_enabled:
+            self._trigger_ai_action()
 
     def _cleanup_inactive_players(self):
         for player in self.players:
@@ -522,6 +661,51 @@ class PokerTable:
                 player.status = "waiting"
             player.street_bet = 0
             player.round_contrib = 0
+
+    def add_bot_player(self, count: int = 1):
+        """添加指定数量的 AI 机器人玩家"""
+        added = []
+        for _ in range(count):
+            player = self.add_player("Bot", is_bot=True)
+            self.auto_bots.append(player)
+            added.append(player)
+        return added
+
+    def remove_all_bots(self):
+        """移除所有 AI 机器人"""
+        to_remove = [bot.id for bot in self.auto_bots]
+        for bot_id in to_remove:
+            self.remove_player(bot_id)
+        self.auto_bots.clear()
+
+    def toggle_auto_play(self, enabled: bool):
+        """切换自动游戏模式"""
+        self.auto_play_enabled = enabled
+
+    def _trigger_ai_action(self):
+        """触发 AI 行动"""
+        if not self.auto_play_enabled:
+            return
+
+        current = self.get_current_player()
+        if not current or not isinstance(current, AIPlayer):
+            return
+
+        # 如果当前等待的是 AI，让它行动
+        if current.id in self.awaiting_response:
+            table_state = self.state_for(current.id)
+            action = current.decide_action(table_state)
+
+            if action:
+                amount = None
+                if action in ["bet", "raise"]:
+                    if hasattr(current, "pending_bet") and current.pending_bet:
+                        amount = current.pending_bet
+
+                try:
+                    self.handle_action(current.id, action, amount)
+                except ValueError:
+                    pass
 
     def available_actions_for(self, viewer_id: Optional[str]) -> List[str]:
         viewer = self._player_by_id(viewer_id) if viewer_id else None
@@ -700,6 +884,7 @@ async def index():
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     player_id: Optional[str] = None
+    ai_task: Optional[asyncio.Task] = None
     try:
         while True:
             data = await websocket.receive_json()
@@ -717,8 +902,31 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                     elif msg_type == "start_round" and player_id:
                         table.start_round(player_id)
+                        # 如果已启用自动游戏且有机器人，自动开始
+                        if table.auto_play_enabled and table.auto_bots:
+                            ai_task = asyncio.create_task(_ai_auto_play())
                     elif msg_type == "action" and player_id:
                         table.handle_action(player_id, data.get("action"), data.get("amount"))
+                    elif msg_type == "add_bot":
+                        count = data.get("count", 1)
+                        bots = table.add_bot_player(count)
+                        await websocket.send_json({
+                            "type": "bots_added",
+                            "payload": [{"id": b.id, "name": b.name, "style": b.style} for b in bots]
+                        })
+                    elif msg_type == "remove_bots":
+                        table.remove_all_bots()
+                        await websocket.send_json({"type": "bots_removed", "payload": {}})
+                    elif msg_type == "toggle_auto_play":
+                        enabled = data.get("enabled", False)
+                        table.toggle_auto_play(enabled)
+                        if enabled and table.auto_bots:
+                            if ai_task and not ai_task.done():
+                                ai_task.cancel()
+                            ai_task = asyncio.create_task(_ai_auto_play())
+                        elif ai_task:
+                            ai_task.cancel()
+                            ai_task = None
                 except ValueError as exc:
                     error = str(exc)
             await broadcast_state()
@@ -731,7 +939,39 @@ async def websocket_endpoint(websocket: WebSocket):
             manager.detach(player_id)
             if player_id:
                 table.remove_player(player_id)
+            if ai_task and not ai_task.done():
+                ai_task.cancel()
         await broadcast_state()
+
+
+async def _ai_auto_play():
+    """AI 自动游戏循环"""
+    while table.auto_play_enabled and table.auto_bots and table.phase in PLAY_PHASES:
+        current = table.get_current_player()
+        if not current or not isinstance(current, AIPlayer):
+            await asyncio.sleep(1)
+            continue
+
+        if current.id not in table.awaiting_response:
+            await asyncio.sleep(0.5)
+            continue
+
+        table_state = table.state_for(current.id)
+        action = current.decide_action(table_state)
+
+        if action:
+            amount = None
+            if action in ["bet", "raise"]:
+                if hasattr(current, "pending_bet") and current.pending_bet:
+                    amount = current.pending_bet
+
+            try:
+                table.handle_action(current.id, action, amount)
+            except ValueError:
+                pass
+
+        await broadcast_state()
+        await asyncio.sleep(1)
 
 
 @app.get("/health")
