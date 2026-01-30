@@ -313,11 +313,15 @@ class PokerTable:
     def is_all_ready(self) -> bool:
         """检查是否所有有筹码的玩家都已准备"""
         funded = self._eligible_players()
+        print(f"is_all_ready check: funded={len(funded)}, players={[(p.name, p.prepared) for p in funded]}")
         if len(funded) < 2:
             return False
-        return all(p.prepared for p in funded)
+        all_ready = all(p.prepared for p in funded)
+        print(f"All players ready: {all_ready}")
+        return all_ready
 
     def start_round(self, requested_by: str):
+        print(f"start_round called by {requested_by}, host_id={self.host_id}")
         if requested_by != self.host_id:
             raise ValueError("Only host can start a round")
         funded = self._eligible_players()
@@ -327,6 +331,7 @@ class PokerTable:
             raise ValueError("Round already in progress")
         
         all_players_ready = all(p.prepared for p in funded)
+        print(f"All players prepared check: {all_players_ready}")
         if not all_players_ready:
             raise ValueError("Not all players are ready")
         
@@ -443,14 +448,20 @@ class PokerTable:
         return None
 
     def get_current_player(self) -> Optional[Player]:
+        print(f"get_current_player: current_index={self.current_index}, players={len(self.players)}")
         if self.current_index is None or not self.players:
+            print("get_current_player returning None - no current_index or no players")
             return None
         current = self.players[self.current_index]
+        print(f"get_current_player: current player={current.name}, status={current.status}")
         if current.status != "active":
             self.current_index = self._first_active_index()
+            print(f"get_current_player: sanitized to index={self.current_index}")
             if self.current_index is None:
+                print("get_current_player returning None - no active players")
                 return None
             current = self.players[self.current_index]
+            print(f"get_current_player: new current player={current.name}, status={current.status}")
         return current
 
     def handle_action(self, player_id: str, action: str, amount: Optional[int] = None):
@@ -793,11 +804,14 @@ class PokerTable:
             show_cards = self.phase == "showdown" or player.id == viewer_id
             return [card_to_label(card) if show_cards else None for card in player.cards]
 
+        print(f"state_for: phase={self.phase}, viewer_id={viewer_id}")
         current = self.get_current_player()
+        print(f"state_for: current_player={current.name if current else None}")
         viewer = self._player_by_id(viewer_id) if viewer_id else None
         viewer_call = 0
         if viewer and self.phase in PLAY_PHASES and viewer.status in {"active", "all_in"}:
             viewer_call = max(0, self.current_bet - viewer.street_bet)
+        print(f"state_for: canStart={viewer_id == self.host_id and self.is_all_ready() and self.phase in {'waiting', 'showdown'}}")
         return {
             "phase": self.phase,
             "board": [card_to_label(card) for card in self.board],
