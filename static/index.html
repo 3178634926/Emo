@@ -291,10 +291,20 @@
             font-size: 20px;
         }
 
-        .player .last-action {
-            font-size: 0.9em;
-            color: #aaa;
-        }
+         .player .last-action {
+             font-size: 0.9em;
+             color: #aaa;
+         }
+         
+         .prepared-badge {
+             background: rgba(46, 204, 113, 0.3);
+             color: #2ecc71;
+             padding: 4px 10px;
+             border-radius: 5px;
+             font-size: 0.85em;
+             margin: 5px 0;
+             display: inline-block;
+         }
 
         .player .street-bet {
             font-size: 0.9em;
@@ -551,10 +561,46 @@
             font-size: 1.1em;
         }
 
-        .game-info span strong {
-            color: #ffd700;
-        }
-    </style>
+         .game-info span strong {
+             color: #ffd700;
+         }
+         
+         .preparation-status {
+             text-align: center;
+             padding: 10px;
+             background: rgba(255,215,0,0.1);
+             border-radius: 10px;
+             margin: 10px 0;
+             font-size: 16px;
+             color: #ffd700;
+         }
+         
+         .preparation-controls {
+             text-align: center;
+             margin: 20px 0;
+         }
+         
+         .preparation-controls button {
+             padding: 15px 30px;
+             background: linear-gradient(135deg, #27ae60, #2ecc71);
+             border: none;
+             border-radius: 10px;
+             font-size: 18px;
+             font-weight: bold;
+             color: white;
+             cursor: pointer;
+             transition: transform 0.2s;
+         }
+         
+         .preparation-controls button:hover {
+             transform: scale(1.05);
+         }
+         
+         .preparation-controls button.prepared {
+             background: linear-gradient(135deg, #95a5a6, #7f8c8d);
+             cursor: not-allowed;
+         }
+     </style>
 </head>
 <body>
     <div class="container">
@@ -575,13 +621,15 @@
         </div>
 
         <div class="game-screen" id="gameScreen">
-            <div class="info-bar">
-                <div class="pot">底池: <span id="potAmount">0</span></div>
-                <div class="phase" id="gamePhase">等待中</div>
-                <div id="currentBetDisplay">当前注: 0</div>
-            </div>
-
-            <div class="poker-table">
+             <div class="info-bar">
+                 <div class="pot">底池: <span id="potAmount">0</span></div>
+                 <div class="phase" id="gamePhase">等待中</div>
+                 <div id="currentBetDisplay">当前注: 0</div>
+             </div> 
+             
+             <div class="preparation-status" id="prepStatus"></div>
+             
+             <div class="poker-table">
                 <div class="board" id="board">
                     <div class="card-placeholder">翻牌前</div>
                 </div>
@@ -589,13 +637,17 @@
                 <div class="players" id="players"></div>
             </div>
 
-            <div class="game-info" id="gameInfo">
-                <span>小盲: <strong id="smallBlind">10</strong></span>
-                <span>大盲: <strong id="bigBlind">20</strong></span>
-                <span>最小加注: <strong id="minRaise">20</strong></span>
-            </div>
-
-            <div class="bot-controls" id="botControls">
+             <div class="game-info" id="gameInfo">
+                 <span>小盲: <strong id="smallBlind">10</strong></span>
+                 <span>大盲: <strong id="bigBlind">20</strong></span>
+                 <span>最小加注: <strong id="minRaise">20</strong></span>
+             </div>
+             
+             <div class="preparation-controls" id="prepControls">
+                 <button onclick="sendPrepare()" id="prepareBtn">准备</button>
+             </div> 
+             
+             <div class="bot-controls" id="botControls">
                 <h3>AI 机器人控制</h3>
                 <button onclick="sendAddBot(1)">+1 机器人</button>
                 <button onclick="sendAddBot(2)">+2 机器人</button>
@@ -648,13 +700,15 @@
             'C': '♣'
         };
 
-        const statusNames = {
-            'waiting': '等待',
-            'active': '行动中',
-            'folded': '已弃牌',
-            'all_in': '全压',
-            'busted': '破产'
-        };
+         const statusNames = {
+             'waiting': '等待',
+             'active': '行动中',
+             'folded': '已弃牌',
+             'all_in': '全压',
+             'busted': '破产'
+         };
+         
+         let playerPrepared = false;
 
         function showError(message) {
             errorMessage.textContent = message;
@@ -726,14 +780,15 @@
             if (player.isSmallBlind) positions.push('<span class="position-badge small-blind">SB</span>');
             if (player.isBigBlind) positions.push('<span class="position-badge big-blind">BB</span>');
 
-            playerEl.innerHTML = `
-                <div class="name">${player.name} ${positions.join('')} ${player.isHost ? '(房主)' : ''}</div>
-                <div class="chips">筹码: ${player.chips}</div>
-                <div class="status ${player.status}">${statusNames[player.status]}</div>
-                <div class="cards"></div>
-                <div class="last-action">${player.lastAction || ''}</div>
-                <div class="street-bet">${player.streetBet > 0 ? '本轮下注: ' + player.streetBet : ''}</div>
-            `;
+             playerEl.innerHTML = `
+                 <div class="name">${player.name} ${positions.join('')} ${player.isHost ? '(房主)' : ''}</div>
+                 <div class="chips">筹码: ${player.chips}</div>
+                 <div class="status ${player.status}">${statusNames[player.status]}</div>
+                 ${player.prepared ? '<div class="prepared-badge">已准备</div>' : ''}
+                 <div class="cards"></div>
+                 <div class="last-action">${player.lastAction || ''}</div>
+                 <div class="street-bet">${player.streetBet > 0 ? '本轮下注: ' + player.streetBet : ''}</div>
+             `;
 
             const cardsEl = playerEl.querySelector('.cards');
             if (player.cards) {
@@ -746,7 +801,50 @@
             return playerEl;
         }
 
-        function renderPlayers(players) {
+         function renderPreparationStatus(players) {
+             const prepStatus = document.getElementById('prepStatus');
+             const prepControls = document.getElementById('prepControls');
+             const prepareBtn = document.getElementById('prepareBtn');
+             
+             if (!players || players.length === 0) {
+                 prepStatus.textContent = '';
+                 if (prepControls) {
+                     prepControls.style.display = 'none';
+                 }
+                 return;
+             }
+             
+             const activePlayers = players.filter(p => p.chips > 0);
+             const preparedCount = activePlayers.filter(p => p.prepared).length;
+             const totalCount = activePlayers.length;
+             
+             if (totalCount < 2) {
+                 prepStatus.textContent = `等待玩家加入 (${totalCount}/2+)`;
+                 if (prepControls) {
+                     prepControls.style.display = 'block';
+                 }
+                 if (prepareBtn) {
+                     prepareBtn.textContent = '准备';
+                     prepareBtn.classList.remove('prepared');
+                 }
+             } else if (preparedCount < totalCount) {
+                 prepStatus.textContent = `等待准备 (${preparedCount}/${totalCount})`;
+                 if (prepControls) {
+                     prepControls.style.display = 'block';
+                 }
+                 if (prepareBtn) {
+                     prepareBtn.textContent = playerPrepared ? '已准备' : '准备';
+                     prepareBtn.classList.toggle('prepared', playerPrepared);
+                 }
+             } else {
+                 prepStatus.textContent = '所有玩家已准备，等待房主开始游戏';
+                 if (prepControls) {
+                     prepControls.style.display = 'none';
+                 }
+             }
+         }
+         
+         function renderPlayers(players) {
             playersEl.innerHTML = '';
 
             if (!players || players.length === 0) {
@@ -849,46 +947,61 @@
             winnersEl.classList.add('show');
         }
 
-        function updateState(state) {
-            gameState = state;
+         function updateState(state) {
+             gameState = state;
+ 
+             potAmount.textContent = state.pot || 0;
+             gamePhase.textContent = phaseNames[state.phase] || state.phase;
+             currentBetDisplay.textContent = `当前注: ${state.currentBet || 0}`;
+             smallBlindEl.textContent = state.blinds?.small || 10;
+             bigBlindEl.textContent = state.blinds?.big || 20;
+             minRaiseEl.textContent = state.minRaise || 20;
+             
+             renderPreparationStatus(state.players);
+             renderBoard(state.board);
+             renderPlayers(state.players);
+             renderActions(state);
+             renderWinners(state.winners);
+         }
 
-            potAmount.textContent = state.pot || 0;
-            gamePhase.textContent = phaseNames[state.phase] || state.phase;
-            currentBetDisplay.textContent = `当前注: ${state.currentBet || 0}`;
-            smallBlindEl.textContent = state.blinds?.small || 10;
-            bigBlindEl.textContent = state.blinds?.big || 20;
-            minRaiseEl.textContent = state.minRaise || 20;
+         function connect() {
+             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+             const host = window.location.hostname;
+             const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+             const wsUrl = `${protocol}//${host}:${port}/ws`;
+             
+             const savedPlayerId = localStorage.getItem('playerId');
+             
+             console.log('Connecting to:', wsUrl, savedPlayerId);
+ 
+             ws = new WebSocket(wsUrl);
+ 
+             ws.onopen = () => {
+                 console.log('WebSocket connected');
+                 if (savedPlayerId) {
+                     ws.send(JSON.stringify({ 
+                         type: 'join', 
+                         name: playerNameInput.value,
+                         playerId: savedPlayerId
+                     }));
+                 }
+             };
 
-            renderBoard(state.board);
-            renderPlayers(state.players);
-            renderActions(state);
-            renderWinners(state.winners);
-        }
-
-        function connect() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.hostname;
-            const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-            const wsUrl = `${protocol}//${host}:${port}/ws`;
-
-            console.log('Connecting to:', wsUrl);
-
-            ws = new WebSocket(wsUrl);
-
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-            };
-
-            ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-
-                switch (data.type) {
-                    case 'joined':
-                        playerId = data.payload.playerId;
-                        loginScreen.style.display = 'none';
-                        gameScreen.classList.add('active');
-                        disconnectBtn.classList.add('show');
-                        break;
+             ws.onmessage = (event) => {
+                 const data = JSON.parse(event.data);
+ 
+                 switch (data.type) {
+                     case 'joined':
+                         playerId = data.payload.playerId;
+                         localStorage.setItem('playerId', playerId);
+                         loginScreen.style.display = 'none';
+                         gameScreen.classList.add('active');
+                         disconnectBtn.classList.add('show');
+                         break;
+ 
+                     case 'info':
+                         showNotification(data.message);
+                         break;
 
                     case 'state':
                         updateState(data.payload);
@@ -1007,13 +1120,32 @@
         }
 
         function sendToggleAutoPlay() {
-            const btn = document.getElementById('autoPlayBtn');
-            const isEnabling = btn.textContent.includes('开启');
-            ws.send(JSON.stringify({
-                type: 'toggle_auto_play',
-                enabled: isEnabling
-            }));
-        }
+             const btn = document.getElementById('autoPlayBtn');
+             const isEnabling = btn.textContent.includes('开启');
+             ws.send(JSON.stringify({
+                 type: 'toggle_auto_play',
+                 enabled: isEnabling
+             }));
+         }
+         
+         function sendPrepare() {
+             if (ws && playerId) {
+                 playerPrepared = !playerPrepared;
+                 ws.send(JSON.stringify({ type: 'prepare', playerId: playerId }));
+                 
+                 const btn = document.getElementById('prepareBtn');
+                 if (btn) {
+                     btn.textContent = playerPrepared ? '已准备' : '准备';
+                     btn.classList.toggle('prepared', playerPrepared);
+                 }
+                 
+                 if (playerPrepared) {
+                     showNotification('已准备');
+                 } else {
+                     showNotification('已取消准备');
+                 }
+             }
+         }
 
         function sendRemoveBots() {
             ws.send(JSON.stringify({

@@ -60,6 +60,7 @@ class Player:
         self.name = name
         self.cards: List[Dict[str, int | str]] = []
         self.status = "waiting"
+        self.prepared = False
         self.chips = STARTING_STACK
         self.street_bet = 0
         self.round_contrib = 0
@@ -76,10 +77,11 @@ class Player:
         self.is_small_blind = False
         self.is_big_blind = False
         self.is_dealer = False
+        self.prepared = False
         if self.chips <= 0:
             self.status = "busted"
         else:
-            self.status = "active"
+            self.status = "waiting"
 
 
 class AIPlayer(Player):
@@ -90,6 +92,7 @@ class AIPlayer(Player):
         self.style = style
         self.action_timer = None
         self.thinking = False
+        self.prepared = True
 
     def decide_action(self, table_state: Dict) -> Optional[str]:
         """根据游戏状态决定行动"""
@@ -218,6 +221,7 @@ class PokerTable:
         self.big_blind_id: Optional[str] = None
         self.auto_bots: List[AIPlayer] = []
         self.auto_play_enabled = False
+        self.timeout_tasks: Dict[str, asyncio.Task] = {}
 
     def add_player(self, name: str, is_bot: bool = False) -> Player:
         if is_bot:
@@ -292,14 +296,31 @@ class PokerTable:
                 return player
         return None
 
+    def prepare_player(self, player_id: str):
+        """玩家准备"""
+        player = self._player_by_id(player_id)
+        if player:
+            player.prepared = True
+
+    def is_all_ready(self) -> bool:
+        """检查是否所有有筹码的玩家都已准备"""
+        funded = self._eligible_players()
+        if len(funded) < 2:
+            return False
+        return all(p.prepared for p in funded)
+
     def start_round(self, requested_by: str):
         if requested_by != self.host_id:
-            raise ValueError("Only the host can start a round")
+            raise ValueError("Only host can start a round")
         funded = self._eligible_players()
         if len(funded) < 2:
             raise ValueError("Need at least two players with chips")
         if self.phase in PLAY_PHASES:
             raise ValueError("Round already in progress")
+        
+        all_players_ready = all(p.prepared for p in funded)
+        if not all_players_ready:
+            raise ValueError("Not all players are ready")
 
         self.phase = "preflop"
         self.board = []
@@ -442,6 +463,13 @@ class PokerTable:
             raise ValueError("Unsupported action")
 
         self._after_player_action(player)
+        
+        player_id = player.id
+        if player_id in self.timeout_tasks:
+            task = self.timeout_tasks[player_id]
+            if not task.done():
+                task.cancel()
+            del self.timeout_tasks[player_id]
 
     def _fold(self, player: Player):
         player.status = "folded"
@@ -525,11 +553,34 @@ class PokerTable:
             self.finish_with_remaining()
             return
         if not self.awaiting_response:
-            # everyone responded, move to next phase or showdown
             self.advance_phase()
             return
         self.advance_turn()
-        # 如果启用自动游戏且当前玩家是AI，触发AI行动
+        
+        current = self.get_current_player()
+        if current:
+            pid = acting_player.id
+            if pid in self.timeout_tasks:
+                task = self.timeout_tasks[pid]
+                if not task.done():
+                    task.cancel()
+                del self.timeout_tasks[pid]
+            
+            async def timeout_handler():
+                await asyncio.sleep(20)
+                if current.id in self.awaiting_response:
+                    await manager.send_personal(
+                        current.id, 
+                        {"type": "info", "message": f"{current.name} 超时自动弃牌"}
+                    )
+                    try:
+                        self.handle_action(current.id, "fold")
+                    except ValueError:
+                        pass
+                    await broadcast_state()
+            
+            self.timeout_tasks[current.id] = asyncio.create_task(timeout_handler())
+        
         if self.auto_play_enabled:
             self._trigger_ai_action()
 
@@ -903,12 +954,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     if msg_type == "join":
                         name = data.get("name", "Player")
-                        player = table.add_player(name)
+                        
+                        existing_player = table._player_by_id(data.get("playerId"))
+                        if existing_player and data.get("playerId"):
+                            existing_player.name = name
+                            player = existing_player
+                            manager.attach(data.get("playerId"), websocket)
+                        else:
+                            player = table.add_player(name)
                         player_id = player.id
                         manager.attach(player_id, websocket)
+                        
                         await manager.send_personal(
                             player_id, {"type": "joined", "payload": {"playerId": player_id}}
                         )
+                    elif msg_type == "prepare" and player_id:
+                        table.prepare_player(player_id)
                     elif msg_type == "start_round" and player_id:
                         table.start_round(player_id)
                         # 如果已启用自动游戏且有机器人，自动开始
