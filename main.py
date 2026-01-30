@@ -784,32 +784,6 @@ class PokerTable:
         """切换自动游戏模式"""
         self.auto_play_enabled = enabled
 
-    def _trigger_ai_action(self):
-        """触发 AI 行动"""
-        if not self.auto_play_enabled:
-            return
-
-        current = self.get_current_player()
-        if not current or not isinstance(current, AIPlayer):
-            return
-
-        if current.id not in self.awaiting_response:
-            return
-        
-        table_state = self.state_for(current.id)
-        action = current.decide_action(table_state)
-
-        if action:
-            amount = None
-            if action in ["bet", "raise"]:
-                if hasattr(current, "pending_bet") and current.pending_bet:
-                    amount = current.pending_bet
-
-            try:
-                self.handle_action(current.id, action, amount)
-            except ValueError as e:
-                logger.warning(f"AI action failed for {current.name}: {e}")
-
     def available_actions_for(self, viewer_id: Optional[str]) -> List[str]:
         viewer = self._player_by_id(viewer_id) if viewer_id else None
         if not viewer or viewer.status != "active" or self.phase not in PLAY_PHASES:
@@ -1077,12 +1051,10 @@ async def _ai_auto_play():
         async with table_lock:
             current = table.get_current_player()
             if not current or not isinstance(current, AIPlayer):
-                await asyncio.sleep(1)
-                continue
+                break
             
             if current.id not in table.awaiting_response:
-                await asyncio.sleep(0.5)
-                continue
+                break
             
             table_state = table.state_for(current.id)
             action = current.decide_action(table_state)
