@@ -309,6 +309,53 @@
             flex-wrap: wrap;
         }
 
+        .bot-controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            flex-wrap: wrap;
+        }
+
+        .bot-controls h3 {
+            margin: 0;
+            font-size: 16px;
+            color: #ffd700;
+        }
+
+        .bot-controls button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            color: white;
+        }
+
+        .bot-controls button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(52, 152, 219, 0.3);
+        }
+
+        .bot-controls button.btn-remove {
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
+        }
+
+        .bot-controls button.btn-remove:hover {
+            box-shadow: 0 4px 8px rgba(231, 76, 60, 0.3);
+        }
+
+        .bot-controls button#autoPlayBtn.active {
+            background: linear-gradient(135deg, #27ae60, #229954);
+        }
+
         .actions button {
             padding: 12px 25px;
             border: none;
@@ -425,6 +472,28 @@
             display: block;
         }
 
+        .notification {
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(39, 174, 96, 0.95);
+            color: white;
+            padding: 12px 25px;
+            border-radius: 25px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.3s, transform 0.3s;
+        }
+
+        .notification.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(10px);
+        }
+
         .disconnect-btn {
             position: fixed;
             top: 20px;
@@ -524,6 +593,15 @@
                 <span>小盲: <strong id="smallBlind">10</strong></span>
                 <span>大盲: <strong id="bigBlind">20</strong></span>
                 <span>最小加注: <strong id="minRaise">20</strong></span>
+            </div>
+
+            <div class="bot-controls" id="botControls">
+                <h3>AI 机器人控制</h3>
+                <button onclick="sendAddBot(1)">+1 机器人</button>
+                <button onclick="sendAddBot(2)">+2 机器人</button>
+                <button onclick="sendAddBot(3)">+3 机器人</button>
+                <button onclick="sendToggleAutoPlay()" id="autoPlayBtn">开启自动游戏</button>
+                <button onclick="sendRemoveBots()" class="btn-remove">移除所有机器人</button>
             </div>
 
             <div class="actions" id="actions"></div>
@@ -816,6 +894,33 @@
                         updateState(data.payload);
                         break;
 
+                    case 'bots_added':
+                        showNotification(`已添加 ${data.payload.count} 个机器人`);
+                        break;
+
+                    case 'bots_removed':
+                        showNotification(`已移除 ${data.payload.count} 个机器人`);
+                        break;
+
+                    case 'auto_play_toggled':
+                        const btn = document.getElementById('autoPlayBtn');
+                        if (data.payload.enabled) {
+                            btn.textContent = '关闭自动游戏';
+                            btn.classList.add('active');
+                            showNotification('自动游戏已开启');
+                        } else {
+                            btn.textContent = '开启自动游戏';
+                            btn.classList.remove('active');
+                            showNotification('自动游戏已关闭');
+                        }
+                        break;
+
+                    case 'bot_action':
+                        const botAction = data.payload;
+                        const actionText = getActionText(botAction.action, botAction.amount);
+                        showNotification(`${botAction.bot_name} ${actionText}`);
+                        break;
+
                     case 'error':
                         showError(data.message);
                         break;
@@ -931,6 +1036,61 @@
                 ws.close();
             }
         });
+
+        // 机器人控制函数
+        function sendAddBot(count) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                showError('请先连接游戏');
+                return;
+            }
+            ws.send(JSON.stringify({
+                type: 'add_bot',
+                count: count
+            }));
+        }
+
+        function sendRemoveBots() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                showError('请先连接游戏');
+                return;
+            }
+            ws.send(JSON.stringify({
+                type: 'remove_bots'
+            }));
+        }
+
+        function sendToggleAutoPlay() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                showError('请先连接游戏');
+                return;
+            }
+            ws.send(JSON.stringify({
+                type: 'toggle_auto_play'
+            }));
+        }
+
+        function getActionText(action, amount) {
+            const actionMap = {
+                'fold': '弃牌',
+                'check': '过牌',
+                'call': '跟注',
+                'bet': amount ? `下注 ${amount}` : '下注',
+                'raise': amount ? `加注到 ${amount}` : '加注'
+            };
+            return actionMap[action] || action;
+        }
+
+        function showNotification(message) {
+            const notification = document.createElement('div');
+            notification.className = 'notification';
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            setTimeout(() => notification.classList.add('show'), 10);
+            setTimeout(() => {
+                notification.classList.remove('show');
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
     </script>
 </body>
 </html>
