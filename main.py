@@ -229,21 +229,22 @@ class PokerTable:
         self.auto_play_enabled = False
         self.timeout_tasks: Dict[str, asyncio.Task] = {}
 
-    def add_player(self, name: str, is_bot: bool = False) -> Player:
+    def add_player(self, name: str, is_bot: bool = False, player_id: Optional[str] = None) -> Player:
         if is_bot:
             bot_names_used = [p.name for p in self.players if isinstance(p, AIPlayer)]
             available_names = [n for n in BOT_NAMES if n not in bot_names_used]
             name = random.choice(available_names) if available_names else name
             style = random.choice(BOT_STYLES)
             player: Player = AIPlayer(str(uuid.uuid4()), name, style)
+            self.players.append(player)
         else:
-            existing_player = self._player_by_id(name)
-            if existing_player:
-                existing_player.name = name
-                player = existing_player
-            else:
-                player = Player(str(uuid.uuid4()), name)
-        self.players.append(player)
+            if player_id:
+                existing_player = self._player_by_id(player_id)
+                if existing_player:
+                    existing_player.name = name
+                    return existing_player
+            player = Player(str(uuid.uuid4()), name)
+            self.players.append(player)
         if not self.host_id:
             self.host_id = player.id
         return player
@@ -256,20 +257,38 @@ class PokerTable:
                 break
         if removed_index is None:
             return
-        del self.players[removed_index]
-        if self.host_id == player_id:
-            self.host_id = self.players[0].id if self.players else None
-        if self.dealer_position is not None:
-            if removed_index < self.dealer_position:
-                self.dealer_position -= 1
-            elif removed_index == self.dealer_position:
-                self.dealer_position = None
-        if not self.players:
-            self.reset_table()
-            return
-        self._sanitize_current_index()
-        if self.phase in PLAY_PHASES and self.current_index is None:
-            self.finish_with_remaining()
+        
+        player = self.players[removed_index]
+        
+        if self.phase in PLAY_PHASES and player.status == "active":
+            player.status = "folded"
+            player.last_action = "弃牌"
+            self.awaiting_response.discard(player.id)
+            
+            if self.current_index is not None and self.players[self.current_index].id == player_id:
+                self.advance_turn()
+            
+            self._cleanup_inactive_players()
+            active_or_all_in = [p for p in self.players if p.status in {"active", "all_in"}]
+            if len(active_or_all_in) <= 1:
+                self.finish_with_remaining()
+        else:
+            del self.players[removed_index]
+            
+            if self.host_id == player_id:
+                self.host_id = self.players[0].id if self.players else None
+            if self.dealer_position is not None:
+                if removed_index < self.dealer_position:
+                    self.dealer_position -= 1
+                elif removed_index == self.dealer_position:
+                    self.dealer_position = None
+            
+            if not self.players:
+                self.reset_table()
+                return
+            self._sanitize_current_index()
+            if self.phase in PLAY_PHASES and self.current_index is None:
+                self.finish_with_remaining()
 
     def reset_table(self):
         self.phase = "waiting"
@@ -284,6 +303,10 @@ class PokerTable:
         self.dealer_id = None
         self.small_blind_id = None
         self.big_blind_id = None
+        for task in self.timeout_tasks.values():
+            if not task.done():
+                task.cancel()
+        self.timeout_tasks.clear()
         if not self.players:
             self.dealer_position = None
 
@@ -297,6 +320,9 @@ class PokerTable:
         current = self.players[self.current_index]
         if current.status != "active":
             self.current_index = self._first_active_index()
+            
+        if self.current_index is not None and self.current_index >= len(self.players):
+            self.current_index = None
 
     def _eligible_players(self) -> List[Player]:
         return [p for p in self.players if p.chips > 0]
@@ -337,6 +363,7 @@ class PokerTable:
         
         for player in funded:
             player.prepared = True
+            player.status = "active"
 
         self.phase = "preflop"
         self.board = []
@@ -376,6 +403,9 @@ class PokerTable:
 
     def _deal_private_cards(self):
         active = [p for p in self.players if p.status == "active"]
+        cards_needed = len(active) * 2
+        if len(self.deck) < cards_needed:
+            raise ValueError(f"Not enough cards in deck: need {cards_needed}, have {len(self.deck)}")
         for _ in range(2):
             for player in active:
                 player.cards.append(self.deck.pop())
@@ -444,6 +474,10 @@ class PokerTable:
     def get_current_player(self) -> Optional[Player]:
         if self.current_index is None or not self.players:
             return None
+        if self.current_index >= len(self.players):
+            self.current_index = self._first_active_index()
+            if self.current_index is None:
+                return None
         current = self.players[self.current_index]
         if current.status != "active":
             self.current_index = self._first_active_index()
@@ -477,12 +511,8 @@ class PokerTable:
 
         self._after_player_action(player)
         
-        player_id = player.id
-        if player_id in self.timeout_tasks:
-            task = self.timeout_tasks[player_id]
-            if not task.done():
-                task.cancel()
-            del self.timeout_tasks[player_id]
+        if isinstance(player, AIPlayer) and hasattr(player, 'pending_bet'):
+            player.pending_bet = None
 
     def _fold(self, player: Player):
         player.status = "folded"
@@ -593,9 +623,6 @@ class PokerTable:
                     await broadcast_state()
             
             self.timeout_tasks[current.id] = asyncio.create_task(timeout_handler())
-        
-        if self.auto_play_enabled:
-            self._trigger_ai_action()
 
     def _cleanup_inactive_players(self):
         for player in self.players:
@@ -622,14 +649,20 @@ class PokerTable:
         if self.phase not in PLAY_PHASES:
             return
         if self.phase == "preflop":
+            if len(self.deck) < 4:
+                raise ValueError(f"Not enough cards in deck for flop: need 4, have {len(self.deck)}")
             self._burn()
             self.board.extend([self.deck.pop(), self.deck.pop(), self.deck.pop()])
             self.phase = "flop"
         elif self.phase == "flop":
+            if len(self.deck) < 2:
+                raise ValueError(f"Not enough cards in deck for turn: need 2, have {len(self.deck)}")
             self._burn()
             self.board.append(self.deck.pop())
             self.phase = "turn"
         elif self.phase == "turn":
+            if len(self.deck) < 2:
+                raise ValueError(f"Not enough cards in deck for river: need 2, have {len(self.deck)}")
             self._burn()
             self.board.append(self.deck.pop())
             self.phase = "river"
@@ -673,6 +706,12 @@ class PokerTable:
         self.phase = "showdown"
         self.current_index = None
         self.awaiting_response.clear()
+        
+        for task in self.timeout_tasks.values():
+            if not task.done():
+                task.cancel()
+        self.timeout_tasks.clear()
+        
         self._mark_post_round_states()
 
     def resolve_showdown(self):
@@ -707,6 +746,12 @@ class PokerTable:
         self.pot = 0
         self.current_index = None
         self.awaiting_response.clear()
+        
+        for task in self.timeout_tasks.values():
+            if not task.done():
+                task.cancel()
+        self.timeout_tasks.clear()
+        
         self._mark_post_round_states()
 
     def _mark_post_round_states(self):
@@ -748,21 +793,22 @@ class PokerTable:
         if not current or not isinstance(current, AIPlayer):
             return
 
-        # 如果当前等待的是 AI，让它行动
-        if current.id in self.awaiting_response:
-            table_state = self.state_for(current.id)
-            action = current.decide_action(table_state)
+        if current.id not in self.awaiting_response:
+            return
+        
+        table_state = self.state_for(current.id)
+        action = current.decide_action(table_state)
 
-            if action:
-                amount = None
-                if action in ["bet", "raise"]:
-                    if hasattr(current, "pending_bet") and current.pending_bet:
-                        amount = current.pending_bet
+        if action:
+            amount = None
+            if action in ["bet", "raise"]:
+                if hasattr(current, "pending_bet") and current.pending_bet:
+                    amount = current.pending_bet
 
-                try:
-                    self.handle_action(current.id, action, amount)
-                except ValueError:
-                    pass
+            try:
+                self.handle_action(current.id, action, amount)
+            except ValueError as e:
+                logger.warning(f"AI action failed for {current.name}: {e}")
 
     def available_actions_for(self, viewer_id: Optional[str]) -> List[str]:
         viewer = self._player_by_id(viewer_id) if viewer_id else None
@@ -970,14 +1016,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     if msg_type == "join":
                         name = data.get("name", "Player")
+                        reconnect_player_id = data.get("playerId")
                         
-                        existing_player = table._player_by_id(data.get("playerId"))
-                        if existing_player and data.get("playerId"):
-                            existing_player.name = name
-                            player = existing_player
-                            manager.attach(data.get("playerId"), websocket)
-                        else:
-                            player = table.add_player(name)
+                        player = table.add_player(name, is_bot=False, player_id=reconnect_player_id)
                         player_id = player.id
                         manager.attach(player_id, websocket)
                         
@@ -1033,30 +1074,30 @@ async def websocket_endpoint(websocket: WebSocket):
 async def _ai_auto_play():
     """AI 自动游戏循环"""
     while table.auto_play_enabled and table.auto_bots and table.phase in PLAY_PHASES:
-        current = table.get_current_player()
-        if not current or not isinstance(current, AIPlayer):
-            await asyncio.sleep(1)
-            continue
-        
-        if current.id not in table.awaiting_response:
-            await asyncio.sleep(0.5)
-            continue
-        
-        table_state = table.state_for(current.id)
-        action = current.decide_action(table_state)
-        
-        if action:
-            amount = None
-            if action in ["bet", "raise"]:
-                if hasattr(current, "pending_bet") and current.pending_bet:
-                    amount = current.pending_bet
+        async with table_lock:
+            current = table.get_current_player()
+            if not current or not isinstance(current, AIPlayer):
+                await asyncio.sleep(1)
+                continue
             
-            try:
-                table.handle_action(current.id, action, amount)
-                await broadcast_state()
-            except ValueError as e:
-                print(f"AI Action Error: {e}")
-                pass
+            if current.id not in table.awaiting_response:
+                await asyncio.sleep(0.5)
+                continue
+            
+            table_state = table.state_for(current.id)
+            action = current.decide_action(table_state)
+            
+            if action:
+                amount = None
+                if action in ["bet", "raise"]:
+                    if hasattr(current, "pending_bet") and current.pending_bet:
+                        amount = current.pending_bet
+                
+                try:
+                    table.handle_action(current.id, action, amount)
+                    await broadcast_state()
+                except ValueError as e:
+                    logger.warning(f"AI auto-play action failed for {current.name}: {e}")
         
         await asyncio.sleep(1)
 
