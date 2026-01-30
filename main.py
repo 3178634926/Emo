@@ -46,143 +46,20 @@ def rank_to_label(value: int) -> str:
     return RANK_DISPLAY.get(value, str(value))
 
 
-def card_to_label(card: Dict[str, int]) -> str:
-    return f"{rank_to_label(card['rank'])}{card['suit']}"
+def card_to_label(card: Dict[str, int | str]) -> str:
+    return f"{rank_to_label(int(card['rank']))}{card['suit']}"
 
 
-def build_deck() -> List[Dict[str, int]]:
+def build_deck() -> List[Dict[str, int | str]]:
     return [{"rank": rank, "suit": suit} for suit in SUITS for rank in RANKS]
-
-
-class AIPlayer(Player):
-    """AI 机器人玩家类"""
-
-    def __init__(self, player_id: str, name: str, style: str = "平衡"):
-        super().__init__(player_id, name)
-        self.style = style  # 保守, 激进, 平衡
-        self.action_timer = None
-        self.thinking = False
-
-    def decide_action(self, table_state: Dict) -> str:
-        """根据游戏状态决定行动"""
-        if self.thinking:
-            return None
-
-        to_call = table_state.get("viewerCallAmount", 0)
-        pot = table_state.get("pot", 0)
-        current_bet = table_state.get("currentBet", 0)
-        my_chips = self.chips
-        my_street_bet = self.street_bet
-
-        self.thinking = True
-
-        # 简单 AI 决策逻辑
-        try:
-            action = self._make_decision(to_call, pot, current_bet, my_chips, my_street_bet)
-        except Exception:
-            action = "fold"
-
-        self.thinking = False
-        return action
-
-    def _make_decision(self, to_call: int, pot: int, current_bet: int,
-                    my_chips: int, my_street_bet: int) -> str:
-        """核心决策逻辑"""
-        # 检查手牌强度（简化版）
-        hand_strength = self._evaluate_hand_strength()
-
-        if to_call == 0:
-            # 可以过牌
-            if hand_strength > 0.6 and random.random() < 0.4:
-                return self._bet_action(my_chips, current_bet, pot)
-            return "check"
-
-        if to_call > my_chips:
-            # 需要全压
-            if hand_strength > 0.5:
-                return "call"
-            return random.choice(["call", "fold"])
-
-        # 需要跟注
-        call_ratio = to_call / (my_chips + my_street_bet) if my_chips + my_street_bet > 0 else 1
-
-        if hand_strength > 0.7:
-            # 强牌
-            if call_ratio < 0.3:
-                return self._raise_action(my_chips, my_street_bet, current_bet)
-            return "call"
-        elif hand_strength > 0.4:
-            # 中等牌
-            if call_ratio < 0.2 and random.random() < 0.5:
-                return self._raise_action(my_chips, my_street_bet, current_bet)
-            return random.choice(["call", "fold"] if random.random() < 0.3 else "call")
-        else:
-            # 弱牌
-            if call_ratio > 0.3 and self.style == "激进":
-                return self._raise_action(my_chips, my_street_bet, current_bet)
-            if self.style == "保守":
-                return "fold" if to_call > pot * 0.2 else "call"
-            return random.choice(["call", "fold"]) if random.random() < 0.4 else "call"
-
-    def _bet_action(self, my_chips: int, my_street_bet: int, current_bet: int) -> str:
-        """决定下注金额"""
-        if self.style == "保守":
-            bet_amount = min(my_chips, current_bet * 2 if current_bet > 0 else self.big_blind_amount)
-        elif self.style == "激进":
-            bet_amount = min(my_chips, max(current_bet * 3, pot // 2))
-        else:  # 平衡
-            bet_amount = min(my_chips, max(current_bet * 2.5, pot // 3))
-        self.pending_bet = bet_amount
-        return "bet"
-
-    def _raise_action(self, my_chips: int, my_street_bet: int, current_bet: int) -> str:
-        """决定加注金额"""
-        min_raise = current_bet + self.big_blind_amount
-        if self.style == "保守":
-            raise_amount = min(my_chips - my_street_bet, min_raise * 1.5)
-        elif self.style == "激进":
-            raise_amount = min(my_chips - my_street_bet, current_bet * 3)
-        else:  # 平衡
-            raise_amount = min(my_chips - my_street_bet, min_raise * 2)
-        self.pending_bet = my_street_bet + raise_amount
-        return "raise"
-
-    def _evaluate_hand_strength(self) -> float:
-        """评估手牌强度（简化版）"""
-        if not self.cards or len(self.cards) < 2:
-            return 0.3
-
-        # 检查高牌
-        high_cards = sum(1 for c in self.cards if c["rank"] >= 11)
-        ranks = [c["rank"] for c in self.cards]
-
-        # 对子
-        pairs = len([r for r in set(ranks) if ranks.count(r) >= 2])
-        # 同花
-        same_suit = len(set(c["suit"] for c in self.cards)) == 2
-
-        strength = 0.3
-        if high_cards >= 1:
-            strength += 0.15
-        if pairs >= 1:
-            strength += 0.2 * pairs
-        if same_suit:
-            strength += 0.1
-
-        return min(strength, 0.9)
-
-    def reset_for_round(self):
-        super().reset_for_round()
-        self.thinking = False
-        self.pending_bet = None
 
 
 class Player:
     def __init__(self, player_id: str, name: str):
         self.id = player_id
         self.name = name
-        self.cards: List[Dict[str, int]] = []
-        self.status = "waiting"  # waiting, active, folded, all_in, busted
+        self.cards: List[Dict[str, int | str]] = []
+        self.status = "waiting"
         self.chips = STARTING_STACK
         self.street_bet = 0
         self.round_contrib = 0
@@ -205,15 +82,130 @@ class Player:
             self.status = "active"
 
 
+class AIPlayer(Player):
+    """AI 机器人玩家类"""
+
+    def __init__(self, player_id: str, name: str, style: str = "平衡"):
+        super().__init__(player_id, name)
+        self.style = style
+        self.action_timer = None
+        self.thinking = False
+
+    def decide_action(self, table_state: Dict) -> Optional[str]:
+        """根据游戏状态决定行动"""
+        if self.thinking:
+            return None
+
+        to_call = table_state.get("viewerCallAmount", 0)
+        pot = table_state.get("pot", 0)
+        current_bet = table_state.get("currentBet", 0)
+        my_chips = self.chips
+        my_street_bet = self.street_bet
+
+        self.thinking = True
+
+        try:
+            action = self._make_decision(to_call, pot, current_bet, my_chips, my_street_bet)
+        except Exception:
+            action = "fold"
+
+        self.thinking = False
+        return action
+
+    def _make_decision(self, to_call: int, pot: int, current_bet: int,
+                    my_chips: int, my_street_bet: int) -> str:
+        """核心决策逻辑"""
+        hand_strength = self._evaluate_hand_strength()
+
+        if to_call == 0:
+            if hand_strength > 0.6 and random.random() < 0.4:
+                return self._bet_action(my_chips, my_street_bet, current_bet, pot)
+            return "check"
+
+        if to_call > my_chips:
+            if hand_strength > 0.5:
+                return "call"
+            return random.choice(["call", "fold"])
+
+        call_ratio = to_call / (my_chips + my_street_bet) if my_chips + my_street_bet > 0 else 1
+
+        if hand_strength > 0.7:
+            if call_ratio < 0.3:
+                return self._raise_action(my_chips, my_street_bet, current_bet, pot)
+            return "call"
+        elif hand_strength > 0.4:
+            if call_ratio < 0.2 and random.random() < 0.5:
+                return self._raise_action(my_chips, my_street_bet, current_bet, pot)
+            return random.choice(["call", "fold"] if random.random() < 0.3 else "call")
+        else:
+            if call_ratio > 0.3 and self.style == "激进":
+                return self._raise_action(my_chips, my_street_bet, current_bet, pot)
+            if self.style == "保守":
+                return "fold" if to_call > pot * 0.2 else "call"
+            return random.choice(["call", "fold"]) if random.random() < 0.4 else "call"
+
+    def _bet_action(self, my_chips: int, my_street_bet: int, current_bet: int, pot: int) -> str:
+        """决定下注金额"""
+        if self.style == "保守":
+            bet_amount = min(my_chips, current_bet * 2 if current_bet > 0 else BIG_BLIND)
+        elif self.style == "激进":
+            bet_amount = min(my_chips, max(current_bet * 3, pot // 2))
+        else:
+            bet_amount = min(my_chips, max(current_bet * 2.5, pot // 3))
+        self.pending_bet = int(bet_amount)
+        return "bet"
+
+    def _raise_action(self, my_chips: int, my_street_bet: int, current_bet: int, pot: int) -> str:
+        """决定加注金额"""
+        min_raise = current_bet + BIG_BLIND
+        if self.style == "保守":
+            raise_amount = min(my_chips - my_street_bet, int(min_raise * 1.5))
+        elif self.style == "激进":
+            raise_amount = min(my_chips - my_street_bet, max(current_bet * 3, pot // 2))
+        else:
+            raise_amount = min(my_chips - my_street_bet, max(int(min_raise * 2), pot // 3))
+        self.pending_bet = my_street_bet + int(raise_amount)
+        return "raise"
+
+    def _evaluate_hand_strength(self) -> float:
+        """评估手牌强度（简化版）"""
+        if not self.cards or len(self.cards) < 2:
+            return 0.3
+
+        high_cards = sum(1 for c in self.cards if isinstance(c.get("rank"), int) and int(c["rank"]) >= 11)
+        ranks = [int(c["rank"]) for c in self.cards if isinstance(c.get("rank"), int)]
+
+        pairs = len([r for r in set(ranks) if ranks.count(r) >= 2])
+        same_suit = len(set(c["suit"] for c in self.cards)) == 2
+
+        strength = 0.3
+        if high_cards >= 1:
+            strength += 0.15
+        if pairs >= 1:
+            strength += 0.2 * pairs
+        if same_suit:
+            strength += 0.1
+
+        return min(strength, 0.9)
+
+    def reset_for_round(self):
+        super().reset_for_round()
+        self.thinking = False
+        self.pending_bet = None
+
+
+
+
+
 class PokerTable:
     def __init__(self):
         self.players: List[Player] = []
         self.host_id: Optional[str] = None
         self.phase = "waiting"
-        self.board: List[Dict[str, int]] = []
-        self.deck: List[Dict[str, int]] = []
+        self.board: List[Dict[str, int | str]] = []
+        self.deck: List[Dict[str, int | str]] = []
         self.current_index: Optional[int] = None
-        self.winners: List[Dict[str, str]] = []
+        self.winners: List[Dict[str, str | int | List[str]]] = []
         self.pot = 0
         self.current_bet = 0
         self.min_raise = BIG_BLIND
@@ -233,7 +225,7 @@ class PokerTable:
             available_names = [n for n in BOT_NAMES if n not in bot_names_used]
             name = random.choice(available_names) if available_names else name
             style = random.choice(BOT_STYLES)
-            player = AIPlayer(str(uuid.uuid4()), name, style)
+            player: Player = AIPlayer(str(uuid.uuid4()), name, style)
         else:
             player = Player(str(uuid.uuid4()), name)
         self.players.append(player)
@@ -642,7 +634,7 @@ class PokerTable:
                 {
                     "playerId": player.id,
                     "name": player.name,
-                    "handName": HAND_NAMES[top_score[0]],
+                    "handName": HAND_NAMES[score[0]],
                     "hand": [card_to_label(card) for card in best_hand],
                     "payout": payout,
                 }
@@ -667,7 +659,8 @@ class PokerTable:
         added = []
         for _ in range(count):
             player = self.add_player("Bot", is_bot=True)
-            self.auto_bots.append(player)
+            if isinstance(player, AIPlayer):
+                self.auto_bots.append(player)
             added.append(player)
         return added
 
@@ -777,15 +770,31 @@ class PokerTable:
         }
 
 
-def evaluate_best_hand(cards: List[Dict[str, int]]):
+def evaluate_best_hand(cards: List[Dict[str, int | str]]):
     best_score = None
     best_hand = None
     for combo in itertools.combinations(cards, 5):
         score = score_five_card_hand(combo)
-        if best_score is None or score > best_score:
+        if best_score is None:
             best_score = score
             best_hand = combo
+        else:
+            if compare_hands(score, best_score) > 0:
+                best_score = score
+                best_hand = combo
     return best_score, best_hand
+
+
+def compare_hands(score1, score2) -> int:
+    """比较两个手牌得分，返回 1 表示 score1 更大，-1 表示 score2 更大，0 表示相等"""
+    rank1 = score1[0]
+    rank2 = score2[0]
+    if rank1 > rank2:
+        return 1
+    elif rank1 < rank2:
+        return -1
+    else:
+        return 0
 
 
 def score_five_card_hand(cards: tuple):
