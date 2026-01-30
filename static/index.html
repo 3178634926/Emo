@@ -296,9 +296,19 @@
              color: #aaa;
          }
          
-         .prepared-badge {
+        .prepared-badge {
              background: rgba(46, 204, 113, 0.3);
              color: #2ecc71;
+             padding: 4px 10px;
+             border-radius: 5px;
+             font-size: 0.85em;
+             margin: 5px 0;
+             display: inline-block;
+         }
+         
+         .unprepared-badge {
+             background: rgba(231, 76, 60, 0.3);
+             color: #e74c3c;
              padding: 4px 10px;
              border-radius: 5px;
              font-size: 0.85em;
@@ -784,7 +794,7 @@
                  <div class="name">${player.name} ${positions.join('')} ${player.isHost ? '(房主)' : ''}</div>
                  <div class="chips">筹码: ${player.chips}</div>
                  <div class="status ${player.status}">${statusNames[player.status]}</div>
-                 ${player.prepared ? '<div class="prepared-badge">已准备</div>' : ''}
+                 ${player.prepared ? '<div class="prepared-badge">✓ 已准备</div>' : '<div class="unprepared-badge">未准备</div>'}
                  <div class="cards"></div>
                  <div class="last-action">${player.lastAction || ''}</div>
                  <div class="street-bet">${player.streetBet > 0 ? '本轮下注: ' + player.streetBet : ''}</div>
@@ -832,12 +842,13 @@
                  if (prepControls) {
                      prepControls.style.display = 'block';
                  }
-                 if (prepareBtn) {
-                     prepareBtn.textContent = playerPrepared ? '已准备' : '准备';
-                     prepareBtn.classList.toggle('prepared', playerPrepared);
+                 const currentPlayer = players.find(p => p.id === playerId);
+                 if (prepareBtn && currentPlayer) {
+                     prepareBtn.textContent = currentPlayer.prepared ? '取消准备' : '准备';
+                     prepareBtn.classList.toggle('prepared', currentPlayer.prepared);
                  }
              } else {
-                 prepStatus.textContent = '所有玩家已准备，等待房主开始游戏';
+                 prepStatus.textContent = '✓ 所有玩家已准备，等待房主开始游戏';
                  if (prepControls) {
                      prepControls.style.display = 'none';
                  }
@@ -898,7 +909,13 @@
                     const input = document.createElement('input');
                     input.type = 'number';
                     input.min = action === 'bet' ? state.blinds.big : state.currentBet + state.minRaise;
-                    input.max = state.players.find(p => p.id === playerId)?.chips + state.players.find(p => p.id === playerId)?.streetBet || 0;
+                    const currentPlayer = state.players.find(p => p.id === playerId);
+                    if (currentPlayer) {
+                        const maxAmount = currentPlayer.chips + currentPlayer.streetBet;
+                        input.max = maxAmount;
+                    } else {
+                        input.max = 10000;
+                    }
                     input.value = action === 'bet' ? state.blinds.big : state.currentBet + state.minRaise;
 
                     const confirmBtn = document.createElement('button');
@@ -964,17 +981,17 @@
              renderWinners(state.winners);
          }
 
-         function connect() {
-             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-             const host = window.location.hostname;
-             const port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-             const wsUrl = `${protocol}//${host}:${port}/ws`;
-             
-             const savedPlayerId = localStorage.getItem('playerId');
-             
-             console.log('Connecting to:', wsUrl, savedPlayerId);
- 
-             ws = new WebSocket(wsUrl);
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.hostname;
+            let port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+            
+            const savedPlayerId = localStorage.getItem('playerId');
+            
+            console.log('Connecting to:', protocol, host, port, savedPlayerId);
+            
+            wsUrl = `${protocol}//${host}:${port}/ws`;
+            ws = new WebSocket(wsUrl);
  
              ws.onopen = () => {
                  console.log('WebSocket connected');

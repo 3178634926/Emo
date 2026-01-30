@@ -61,6 +61,7 @@ class Player:
         self.cards: List[Dict[str, int | str]] = []
         self.status = "waiting"
         self.prepared = False
+        self._round_start_prepared = False
         self.chips = STARTING_STACK
         self.street_bet = 0
         self.round_contrib = 0
@@ -77,11 +78,13 @@ class Player:
         self.is_small_blind = False
         self.is_big_blind = False
         self.is_dealer = False
-        self.prepared = False
+        
         if self.chips <= 0:
             self.status = "busted"
         else:
             self.status = "waiting"
+        
+        prepared = self.prepared
 
 
 class AIPlayer(Player):
@@ -231,7 +234,12 @@ class PokerTable:
             style = random.choice(BOT_STYLES)
             player: Player = AIPlayer(str(uuid.uuid4()), name, style)
         else:
-            player = Player(str(uuid.uuid4()), name)
+            existing_player = self._player_by_id(name)
+            if existing_player:
+                existing_player.name = name
+                player = existing_player
+            else:
+                player = Player(str(uuid.uuid4()), name)
         self.players.append(player)
         if not self.host_id:
             self.host_id = player.id
@@ -321,6 +329,12 @@ class PokerTable:
         all_players_ready = all(p.prepared for p in funded)
         if not all_players_ready:
             raise ValueError("Not all players are ready")
+        
+        for player in self.players:
+            player.reset_for_round()
+        
+        for player in funded:
+            player.prepared = True
 
         self.phase = "preflop"
         self.board = []
@@ -331,7 +345,7 @@ class PokerTable:
         self.current_bet = 0
         self.min_raise = self.big_blind_amount
         self.awaiting_response = set()
-
+        
         for player in self.players:
             player.reset_for_round()
 
@@ -792,6 +806,7 @@ class PokerTable:
                     "id": player.id,
                     "name": player.name,
                     "status": player.status,
+                    "prepared": player.prepared,
                     "cards": visible_cards(player),
                     "isHost": player.id == self.host_id,
                     "chips": player.chips,
@@ -807,7 +822,7 @@ class PokerTable:
             "hostId": self.host_id,
             "winners": self.winners,
             "viewerId": viewer_id,
-            "canStart": viewer_id == self.host_id and len(self._eligible_players()) >= 2 and self.phase in {"waiting", "showdown"},
+            "canStart": viewer_id == self.host_id and self.is_all_ready() and self.phase in {"waiting", "showdown"},
             "deckRemaining": len(self.deck),
             "pot": self.pot,
             "currentBet": self.current_bet,
@@ -1021,26 +1036,27 @@ async def _ai_auto_play():
         if not current or not isinstance(current, AIPlayer):
             await asyncio.sleep(1)
             continue
-
+        
         if current.id not in table.awaiting_response:
             await asyncio.sleep(0.5)
             continue
-
+        
         table_state = table.state_for(current.id)
         action = current.decide_action(table_state)
-
+        
         if action:
             amount = None
             if action in ["bet", "raise"]:
                 if hasattr(current, "pending_bet") and current.pending_bet:
                     amount = current.pending_bet
-
+            
             try:
                 table.handle_action(current.id, action, amount)
-            except ValueError:
+                await broadcast_state()
+            except ValueError as e:
+                print(f"AI Action Error: {e}")
                 pass
-
-        await broadcast_state()
+        
         await asyncio.sleep(1)
 
 
