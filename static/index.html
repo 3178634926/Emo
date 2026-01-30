@@ -880,7 +880,26 @@
                 startBtn.className = 'btn-start';
                 startBtn.textContent = '开始新局';
                 startBtn.onclick = () => {
-                    ws.send(JSON.stringify({ type: 'start_round' }));
+                    console.log('Attempting to start round');
+                    console.log('Current player ID:', playerId);
+                    console.log('Current gameState:', gameState);
+                    
+                    if (!ws || ws.readyState !== WebSocket.OPEN) {
+                        console.error('WebSocket is not connected, readyState:', ws ? ws.readyState : 'null');
+                        showError('WebSocket 未连接');
+                        return;
+                    }
+                    
+                    try {
+                        const message = { type: 'start_round' };
+                        const messageStr = JSON.stringify(message);
+                        console.log('Sending message:', messageStr);
+                        ws.send(messageStr);
+                        console.log('Message sent successfully');
+                    } catch (e) {
+                        console.error('Error sending message:', e);
+                        showError('发送消息失败: ' + e.message);
+                    }
                 };
                 actionsEl.appendChild(startBtn);
                 return;

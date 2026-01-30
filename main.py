@@ -960,10 +960,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     player_id: Optional[str] = None
     ai_task: Optional[asyncio.Task] = None
+    print("New WebSocket connection")
     try:
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
+            print(f"Received message: {msg_type}, data: {data}")
             error: Optional[str] = None
             async with table_lock:
                 try:
@@ -985,8 +987,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                     elif msg_type == "prepare" and player_id:
                         table.prepare_player(player_id)
+                        print(f"Player {player_id} prepared")
                     elif msg_type == "start_round" and player_id:
+                        print(f"Received start_round from player {player_id}")
                         table.start_round(player_id)
+                        print(f"Round started, phase: {table.phase}")
                         # 如果已启用自动游戏且有机器人，自动开始
                         if table.auto_play_enabled and table.auto_bots:
                             ai_task = asyncio.create_task(_ai_auto_play())
