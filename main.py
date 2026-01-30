@@ -1,5 +1,6 @@
 import asyncio
 import itertools
+import logging
 import random
 import uuid
 from pathlib import Path
@@ -8,6 +9,9 @@ from typing import Dict, List, Optional, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -36,6 +40,7 @@ HAND_NAMES = {
     1: "One Pair",
     0: "High Card",
 }
+ACTION_TIMEOUT_SECONDS = 20
 
 # AI 机器人名称和风格
 BOT_NAMES = ["Alex", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Quinn"]
@@ -83,8 +88,6 @@ class Player:
             self.status = "busted"
         else:
             self.status = "waiting"
-        
-        prepared = self.prepared
 
 
 class AIPlayer(Player):
@@ -112,7 +115,8 @@ class AIPlayer(Player):
 
         try:
             action = self._make_decision(to_call, pot, current_bet, my_chips, my_street_bet)
-        except Exception:
+        except Exception as e:
+            logger.error(f"AI decision error for {self.name}: {e}")
             action = "fold"
 
         self.thinking = False
@@ -174,7 +178,6 @@ class AIPlayer(Player):
         return "raise"
 
     def _evaluate_hand_strength(self) -> float:
-        """评估手牌强度（简化版）"""
         if not self.cards or len(self.cards) < 2:
             return 0.3
 
@@ -311,17 +314,12 @@ class PokerTable:
             player.prepared = True
 
     def is_all_ready(self) -> bool:
-        """检查是否所有有筹码的玩家都已准备"""
         funded = self._eligible_players()
-        print(f"is_all_ready check: funded={len(funded)}, players={[(p.name, p.prepared) for p in funded]}")
         if len(funded) < 2:
             return False
-        all_ready = all(p.prepared for p in funded)
-        print(f"All players ready: {all_ready}")
-        return all_ready
+        return all(p.prepared for p in funded)
 
     def start_round(self, requested_by: str):
-        print(f"start_round called by {requested_by}, host_id={self.host_id}")
         if requested_by != self.host_id:
             raise ValueError("Only host can start a round")
         funded = self._eligible_players()
@@ -331,7 +329,6 @@ class PokerTable:
             raise ValueError("Round already in progress")
         
         all_players_ready = all(p.prepared for p in funded)
-        print(f"All players prepared check: {all_players_ready}")
         if not all_players_ready:
             raise ValueError("Not all players are ready")
         
@@ -351,9 +348,6 @@ class PokerTable:
         self.min_raise = self.big_blind_amount
         self.awaiting_response = set()
         
-        for player in self.players:
-            player.reset_for_round()
-
         self._assign_positions()
         self._deal_private_cards()
         self._post_blinds()
@@ -448,20 +442,14 @@ class PokerTable:
         return None
 
     def get_current_player(self) -> Optional[Player]:
-        print(f"get_current_player: current_index={self.current_index}, players={len(self.players)}")
         if self.current_index is None or not self.players:
-            print("get_current_player returning None - no current_index or no players")
             return None
         current = self.players[self.current_index]
-        print(f"get_current_player: current player={current.name}, status={current.status}")
         if current.status != "active":
             self.current_index = self._first_active_index()
-            print(f"get_current_player: sanitized to index={self.current_index}")
             if self.current_index is None:
-                print("get_current_player returning None - no active players")
                 return None
             current = self.players[self.current_index]
-            print(f"get_current_player: new current player={current.name}, status={current.status}")
         return current
 
     def handle_action(self, player_id: str, action: str, amount: Optional[int] = None):
@@ -592,7 +580,7 @@ class PokerTable:
                 del self.timeout_tasks[pid]
             
             async def timeout_handler():
-                await asyncio.sleep(20)
+                await asyncio.sleep(ACTION_TIMEOUT_SECONDS)
                 if current.id in self.awaiting_response:
                     await manager.send_personal(
                         current.id, 
@@ -804,14 +792,11 @@ class PokerTable:
             show_cards = self.phase == "showdown" or player.id == viewer_id
             return [card_to_label(card) if show_cards else None for card in player.cards]
 
-        print(f"state_for: phase={self.phase}, viewer_id={viewer_id}")
         current = self.get_current_player()
-        print(f"state_for: current_player={current.name if current else None}")
         viewer = self._player_by_id(viewer_id) if viewer_id else None
         viewer_call = 0
         if viewer and self.phase in PLAY_PHASES and viewer.status in {"active", "all_in"}:
             viewer_call = max(0, self.current_bet - viewer.street_bet)
-        print(f"state_for: canStart={viewer_id == self.host_id and self.is_all_ready() and self.phase in {'waiting', 'showdown'}}")
         return {
             "phase": self.phase,
             "board": [card_to_label(card) for card in self.board],
@@ -867,14 +852,12 @@ def evaluate_best_hand(cards: List[Dict[str, int | str]]):
 
 def compare_hands(score1, score2) -> int:
     """比较两个手牌得分，返回 1 表示 score1 更大，-1 表示 score2 更大，0 表示相等"""
-    rank1 = score1[0]
-    rank2 = score2[0]
-    if rank1 > rank2:
-        return 1
-    elif rank1 < rank2:
-        return -1
-    else:
-        return 0
+    if score1[0] != score2[0]:
+        return 1 if score1[0] > score2[0] else -1
+    for s1, s2 in zip(score1[1], score2[1]):
+        if s1 != s2:
+            return 1 if s1 > s2 else -1
+    return 0
 
 
 def score_five_card_hand(cards: tuple):
@@ -911,7 +894,7 @@ def score_five_card_hand(cards: tuple):
     return (0, ranks)
 
 
-def check_straight(ranks: List[int]):
+def check_straight(ranks: List[int]) -> tuple[bool, Optional[int]]:
     unique = sorted(set(ranks), reverse=True)
     if len(unique) < 5:
         if set([14, 5, 4, 3, 2]).issubset(set(ranks)):
@@ -943,7 +926,10 @@ class ConnectionManager:
     async def send_personal(self, player_id: str, message: Dict):
         socket = self.active.get(player_id)
         if socket:
-            await socket.send_json(message)
+            try:
+                await socket.send_json(message)
+            except Exception as e:
+                logger.error(f"Failed to send message to {player_id}: {e}")
 
 
 table = PokerTable()
@@ -956,7 +942,8 @@ async def broadcast_state():
     for player_id, socket in list(manager.active.items()):
         try:
             await socket.send_json({"type": "state", "payload": table.state_for(player_id)})
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to broadcast to {player_id}: {e}")
             stale.append(player_id)
     for player_id in stale:
         manager.detach(player_id)
@@ -974,12 +961,10 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     player_id: Optional[str] = None
     ai_task: Optional[asyncio.Task] = None
-    print("New WebSocket connection")
     try:
         while True:
             data = await websocket.receive_json()
             msg_type = data.get("type")
-            print(f"Received message: {msg_type}, data: {data}")
             error: Optional[str] = None
             async with table_lock:
                 try:
@@ -1001,12 +986,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                     elif msg_type == "prepare" and player_id:
                         table.prepare_player(player_id)
-                        print(f"Player {player_id} prepared")
                     elif msg_type == "start_round" and player_id:
-                        print(f"Received start_round from player {player_id}")
                         table.start_round(player_id)
-                        print(f"Round started, phase: {table.phase}")
-                        # 如果已启用自动游戏且有机器人，自动开始
                         if table.auto_play_enabled and table.auto_bots:
                             ai_task = asyncio.create_task(_ai_auto_play())
                     elif msg_type == "action" and player_id:
@@ -1033,11 +1014,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             ai_task = None
                 except ValueError as exc:
                     error = str(exc)
+                    logger.warning(f"WebSocket error for {player_id}: {exc}")
             await broadcast_state()
             if error:
                 await websocket.send_json({"type": "error", "message": error})
     except WebSocketDisconnect:
-        pass
+        logger.info(f"WebSocket disconnected: {player_id}")
     finally:
         async with table_lock:
             manager.detach(player_id)
